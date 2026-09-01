@@ -2096,8 +2096,8 @@ is one event per pointer move.
 Capture arms on the **left** button only. A right-button drag is not captured,
 so it ends when the pointer leaves the element.
 
-`onClick` is the primary button too, like the DOM. Use **`onAuxClick`** for the
-others, and read `event.isRightClick`. `onMouseDown` and `onMouseUp` see every
+`onClick` fires on primary-button mouse-up, like the DOM. Use **`onAuxClick`** for
+the others, and read `event.isRightClick`. `onMouseDown` and `onMouseUp` see every
 button through `event.button` (`0` left, `1` middle, `2` right).
 
 ## Supported Styles

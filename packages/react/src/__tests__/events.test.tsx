@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach } from "vitest"
 import React, { useState, useRef } from "react"
 import { createTestRoot, hasNativeTestRenderer } from "../testing"
 import { startFrameLoop } from "../reconciler/renderer.js"
+import { motion } from "../index"
 import type { EventPayload } from "@gpuix/native"
 import { expectScreenshotsDiffer, SHOTS_DIR } from "./test-utils"
 
@@ -165,6 +166,47 @@ describeNative("events", () => {
           "Count: 2",
         ]
       `)
+    })
+
+    it("synthesizes click only for the primary button", () => {
+      const received: string[] = []
+      testRoot.render(
+        <div
+          style={{ width: 200, height: 50 }}
+          onMouseDown={() => received.push("down")}
+          onMouseUp={() => received.push("up")}
+          onClick={() => received.push("click")}
+        />,
+      )
+
+      testRoot.renderer.nativeSimulateMouseDown(10, 10, 2)
+      testRoot.renderer.nativeSimulateMouseUp(10, 10, 2)
+      expect(received).toEqual(["down", "up"])
+
+      testRoot.renderer.nativeSimulateMouseDown(10, 10, 0)
+      testRoot.renderer.nativeSimulateMouseUp(10, 10, 0)
+      expect(received.filter((event) => event === "down")).toHaveLength(2)
+      expect(received.filter((event) => event === "up")).toHaveLength(2)
+      expect(received.filter((event) => event === "click")).toHaveLength(1)
+    })
+
+    it("dispatches primary clicks from native motion elements", () => {
+      let clicks = 0
+      testRoot.render(
+        <motion.div
+          initial={false}
+          animate={{ width: 200 }}
+          style={{ width: 200, height: 50 }}
+          onClick={() => { clicks += 1 }}
+        />,
+      )
+
+      testRoot.renderer.nativeSimulateMouseDown(10, 10, 0)
+      testRoot.renderer.nativeSimulateMouseUp(10, 10, 0)
+      expect(clicks).toBe(1)
+      testRoot.renderer.nativeSimulateMouseDown(10, 10, 2)
+      testRoot.renderer.nativeSimulateMouseUp(10, 10, 2)
+      expect(clicks).toBe(1)
     })
   })
 

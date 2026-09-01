@@ -4352,17 +4352,19 @@ pub(crate) fn build_host_container(
         let callback = ctx.event_callback.clone();
         match event_type.as_str() {
             // ── Click ────────────────────────────────────────────
-            // Primary button only, like the DOM. Right and middle clicks go to
-            // `onAuxClick`, and `onMouseDown` sees every button.
+            // GPUI's higher-level on_click gesture is not finalized by the
+            // embedded macOS pump. A primary mouse-up is the portable click
+            // boundary; right and middle buttons remain aux/mouse events.
             "click" => {
-                el = el.on_click(move |click_event, _window, _cx| {
+                el = el.on_mouse_up(gpui::MouseButton::Left, move |mouse_event, _window, _cx| {
                     emit_event_full(&callback, id, "click", |p| {
-                        let (x, y) = point_to_xy(click_event.position());
+                        let (x, y) = point_to_xy(mouse_event.position);
                         p.x = Some(x);
                         p.y = Some(y);
-                        p.modifiers = Some(click_event.modifiers().into());
-                        p.click_count = Some(click_event.click_count() as u32);
-                        p.is_right_click = Some(click_event.is_right_click());
+                        p.button = Some(0);
+                        p.modifiers = Some(mouse_event.modifiers.into());
+                        p.click_count = Some(mouse_event.click_count as u32);
+                        p.is_right_click = Some(false);
                     });
                 });
             }
