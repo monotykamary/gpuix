@@ -10,6 +10,7 @@ export const gpuixComponents = {
   img: "img",
   svg: "svg",
   canvas: "canvas",
+  terminal: "terminal",
   input: "input",
   textarea: "textarea",
   anchored: "anchored",

@@ -14,6 +14,7 @@ import type {
   MarkdownProps,
   Props,
   SvgProps,
+  TerminalProps,
   TextareaProps,
   VirtualListProps,
 } from "./dist/types/host"
@@ -41,6 +42,7 @@ export namespace JSX {
     code: CodeProps
     diff: DiffProps
     markdown: MarkdownProps
+    terminal: TerminalProps
     "virtual-list": VirtualListProps
   }
 }

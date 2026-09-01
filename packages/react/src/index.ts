@@ -93,6 +93,8 @@ export type {
   NativeWindowInsets,
   PublicInstance,
   StyleDesc,
+  TerminalFrame,
+  TerminalProps,
   WindowKeyEventHandler,
   WindowKeyEventHandlers,
 } from "./types/host.js"

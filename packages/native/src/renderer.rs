@@ -1263,6 +1263,40 @@ impl GpuixRenderer {
         ))
     }
 
+    #[napi]
+    pub fn supports_native_terminal(&self) -> bool {
+        true
+    }
+
+    #[napi]
+    pub fn set_terminal_frame(
+        &self,
+        element_id: f64,
+        metadata: String,
+        cells: Buffer,
+    ) -> Result<()> {
+        let id = to_element_id(element_id)?;
+        let update = crate::custom_elements::terminal::stage_frame(id, &metadata, cells.as_ref())
+            .map_err(Error::from_reason)?;
+
+        #[cfg(target_os = "macos")]
+        if let crate::custom_elements::terminal::FrameUpdate::Repaint(image) = update {
+            let updated = update_window_without_view(move |window, _cx| {
+                if window.update_image(image).is_ok() {
+                    window.present_cached_frame();
+                    true
+                } else {
+                    false
+                }
+            })?;
+            if updated {
+                return Ok(());
+            }
+        }
+
+        self.request_invalidate()
+    }
+
     /// The paintable size of the window in logical pixels, excluding any
     /// platform title bar. This used to answer a hardcoded 800x600, so anything
     /// that turned a mouse position into layout coordinates pointed at the
@@ -2399,6 +2433,11 @@ impl WebGpuixRenderer {
     }
 
     pub fn tick(&self) {}
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = supportsNativeTerminal)]
+    pub fn supports_native_terminal(&self) -> bool {
+        true
+    }
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = getWindowSize)]
     pub fn get_window_size(&self) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
