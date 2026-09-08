@@ -4650,6 +4650,7 @@ pub(crate) fn build_host_container(
                 gesture.cancel();
             }
             el = el.on_mouse_down(gpui::MouseButton::Left, move |_event, window, _cx| {
+                window.release_pointer();
                 window.start_window_resize(edge);
             });
         } else if is_window_drag_region(element) {
@@ -4680,6 +4681,9 @@ pub(crate) fn build_host_container(
             });
             el = el.on_mouse_move(move |event, window, _cx| {
                 if gesture.take_for_move(event.pressed_button) {
+                    // Native compositor grabs can consume mouse-up, so GPUI must
+                    // not retain this drag region as the next gesture's target.
+                    window.release_pointer();
                     window.start_window_move();
                 }
             });
