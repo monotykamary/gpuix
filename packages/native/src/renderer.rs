@@ -25,7 +25,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 #[cfg(any(target_os = "macos", target_family = "wasm"))]
 use std::rc::Rc;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender};
@@ -371,6 +370,12 @@ enum UiCommand {
     Invalidate,
     ActivateWindow,
     SetWindowTitle(String),
+    GetWindowState {
+        response: SyncSender<WindowState>,
+    },
+    MinimizeWindow,
+    ToggleMaximizeWindow,
+    CloseWindow,
     SetDebugFrameOverlay(gpui::DebugFrameOverlayMode),
     CycleDebugFrameOverlay {
         response: SyncSender<String>,
@@ -467,6 +472,20 @@ async fn run_ui_commands(
                 cx.notify();
                 window.refresh();
             }),
+            UiCommand::GetWindowState { response } => {
+                window.update(cx, move |_view, window, _cx| {
+                    response.send(window_state(window)).ok();
+                })
+            }
+            UiCommand::MinimizeWindow => {
+                window.update(cx, |_view, window, _cx| window.minimize_window())
+            }
+            UiCommand::ToggleMaximizeWindow => window.update(cx, |_view, window, _cx| {
+                toggle_maximize_window(window);
+            }),
+            UiCommand::CloseWindow => {
+                window.update(cx, |_view, window, _cx| window.remove_window())
+            }
             UiCommand::SetDebugFrameOverlay(mode) => {
                 window.update(cx, move |_view, window, _cx| {
                     window.set_debug_frame_overlay_mode(mode);
@@ -1561,6 +1580,79 @@ impl GpuixRenderer {
         Err(Error::from_reason(
             "The production GPUIX renderer does not support this operating system",
         ))
+    }
+
+    #[napi]
+    pub fn get_window_state(&self) -> Result<WindowState> {
+        #[cfg(target_os = "macos")]
+        return update_window(|_view, window, _cx| window_state(window));
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        {
+            let (response, receiver) = sync_channel(1);
+            self.send_ui_command(UiCommand::GetWindowState { response })?;
+            return recv_ui_response(receiver, "the window state query");
+        }
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        Err(Error::from_reason("Unsupported operating system"))
+    }
+
+    #[napi]
+    pub fn minimize_window(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window(|_view, window, _cx| window.minimize_window());
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return self.send_ui_command(UiCommand::MinimizeWindow);
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        Err(Error::from_reason("Unsupported operating system"))
+    }
+
+    /// Restore fullscreen first; otherwise toggle the native maximized state.
+    #[napi]
+    pub fn toggle_maximize_window(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window(|_view, window, _cx| toggle_maximize_window(window));
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return self.send_ui_command(UiCommand::ToggleMaximizeWindow);
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        Err(Error::from_reason("Unsupported operating system"))
+    }
+
+    #[napi]
+    pub fn close_window(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window(|_view, window, _cx| window.remove_window());
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return self.send_ui_command(UiCommand::CloseWindow);
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        Err(Error::from_reason("Unsupported operating system"))
     }
 
     #[napi]
@@ -2973,6 +3065,9 @@ pub(crate) struct GpuixView {
     pub(crate) scroll_handles: HashMap<u64, gpui::ScrollHandle>,
     /// Native animation clocks keyed by retained element ID.
     pub(crate) motion_states: HashMap<u64, crate::motion::MotionState>,
+    /// Client-titlebar press state must survive immediate-mode rebuilds between
+    /// mouse down and move. GPUI rebinds pointer capture by the same element id.
+    window_drag_gestures: HashMap<u64, Arc<WindowDragGesture>>,
     /// Live text selection, shared with the paint closures and the napi methods.
     pub(crate) selection: SharedSelection,
     /// Persistent measurement and scroll state for React-backed virtual lists.
@@ -3168,6 +3263,7 @@ impl GpuixView {
             custom_registry: CustomElementRegistry::with_defaults(),
             scroll_handles: HashMap::new(),
             motion_states: HashMap::new(),
+            window_drag_gestures: HashMap::new(),
             selection,
             virtual_lists: HashMap::new(),
             selection_drag_position: None,
@@ -3259,6 +3355,7 @@ impl GpuixView {
             custom_registry: &mut self.custom_registry,
             virtual_lists: &mut self.virtual_lists,
             motion_states: &mut self.motion_states,
+            window_drag_gestures: &mut self.window_drag_gestures,
             now,
             motion_active: &mut motion_active,
             selection: self.selection.clone(),
@@ -3383,6 +3480,7 @@ pub(crate) struct BuildCtx<'a> {
     pub custom_registry: &'a mut CustomElementRegistry,
     virtual_lists: &'a mut HashMap<u64, VirtualListEntry>,
     pub motion_states: &'a mut HashMap<u64, crate::motion::MotionState>,
+    window_drag_gestures: &'a mut HashMap<u64, Arc<WindowDragGesture>>,
     pub now: web_time::Instant,
     pub motion_active: &'a mut bool,
     pub selection: SharedSelection,
@@ -3990,6 +4088,13 @@ impl gpui::Render for GpuixView {
             .retain(|id, _| tree.elements.contains_key(id));
         self.motion_states
             .retain(|id, _| tree.elements.contains_key(id));
+        self.window_drag_gestures.retain(|id, gesture| {
+            let keep = tree.elements.get(id).is_some_and(is_window_drag_region);
+            if !keep {
+                gesture.cancel();
+            }
+            keep
+        });
 
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
         // are different fields of self, so Rust allows borrowing all simultaneously.
@@ -4015,6 +4120,7 @@ impl gpui::Render for GpuixView {
                     custom_registry: &mut self.custom_registry,
                     virtual_lists: &mut self.virtual_lists,
                     motion_states: &mut self.motion_states,
+                    window_drag_gestures: &mut self.window_drag_gestures,
                     now,
                     motion_active: &mut motion_active,
                     selection: self.selection.clone(),
@@ -4529,6 +4635,64 @@ pub(crate) fn build_host_container(
     if is_text_host && element.custom_props.get("aria-valuetext").is_none() {
         if let Some(content) = joined_text_content(ctx.tree, element) {
             el = el.aria_value(content);
+        }
+    }
+
+    if element.element_type == "div" {
+        let resize_edge = element
+            .custom_props
+            .get("windowResizeEdge")
+            .and_then(|value| value.as_str())
+            .and_then(parse_window_resize_edge);
+
+        if let Some(edge) = resize_edge {
+            if let Some(gesture) = ctx.window_drag_gestures.remove(&element.id) {
+                gesture.cancel();
+            }
+            el = el.on_mouse_down(gpui::MouseButton::Left, move |_event, window, _cx| {
+                window.start_window_resize(edge);
+            });
+        } else if is_window_drag_region(element) {
+            // GPUI's own PlatformTitleBar keeps this bit on its retained entity.
+            // GPUIX rebuilds its div every frame, so keep the equivalent state in
+            // GpuixView. capture_pointer is rebound by ElementId across redraws
+            // and guarantees an outside release reaches this element.
+            let gesture = ctx
+                .window_drag_gestures
+                .entry(element.id)
+                .or_default()
+                .clone();
+            let arm_move = gesture.clone();
+            el = el.on_mouse_down(gpui::MouseButton::Left, move |_event, _window, _cx| {
+                arm_move.arm();
+            });
+            let cancel_move = gesture.clone();
+            el = el.on_mouse_up(gpui::MouseButton::Left, move |_event, _window, _cx| {
+                cancel_move.cancel();
+            });
+            let cancel_move = gesture.clone();
+            el = el.on_mouse_up_out(gpui::MouseButton::Left, move |_event, _window, _cx| {
+                cancel_move.cancel()
+            });
+            let cancel_move = gesture.clone();
+            el = el.on_mouse_down_out(move |_event, _window, _cx| {
+                cancel_move.cancel();
+            });
+            el = el.on_mouse_move(move |event, window, _cx| {
+                if gesture.take_for_move(event.pressed_button) {
+                    window.start_window_move();
+                }
+            });
+            el = el
+                .capture_pointer()
+                .window_control_area(gpui::WindowControlArea::Drag)
+                .on_click(move |event, window, _cx| {
+                    if event.click_count() == 2 && can_titlebar_toggle_maximize(window) {
+                        toggle_maximize_window(window);
+                    }
+                });
+        } else if let Some(gesture) = ctx.window_drag_gestures.remove(&element.id) {
+            gesture.cancel();
         }
     }
 
@@ -5167,10 +5331,6 @@ pub(crate) fn point_to_xy(p: gpui::Point<gpui::Pixels>) -> (f64, f64) {
 }
 
 /// Convert GPUI MouseButton to our u32 encoding: 0=left, 1=middle, 2=right.
-fn should_forward_primary_click(is_keyboard_click: bool, has_key_down_handler: bool) -> bool {
-    !is_keyboard_click || !has_key_down_handler
-}
-
 pub(crate) fn mouse_button_to_u32(button: gpui::MouseButton) -> u32 {
     match button {
         gpui::MouseButton::Left => 0,
@@ -5588,6 +5748,118 @@ pub struct EdgeInsets {
     pub left: f64,
 }
 
+#[derive(Debug, Clone)]
+#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
+pub struct WindowState {
+    pub decorations: String,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub resizable: bool,
+    pub can_minimize: bool,
+    pub can_maximize: bool,
+}
+
+fn window_state(window: &gpui::Window) -> WindowState {
+    let controls = window.window_controls();
+    WindowState {
+        decorations: match window.window_decorations() {
+            gpui::Decorations::Server => "server",
+            gpui::Decorations::Client { .. } => "client",
+        }
+        .to_string(),
+        maximized: window.is_maximized(),
+        fullscreen: window.is_fullscreen(),
+        resizable: window.is_resizable(),
+        can_minimize: controls.minimize,
+        can_maximize: controls.maximize,
+    }
+}
+
+fn toggle_maximize_window(window: &gpui::Window) {
+    if window.is_fullscreen() {
+        window.toggle_fullscreen();
+    } else {
+        window.zoom_window();
+    }
+}
+
+fn can_titlebar_toggle_maximize(window: &gpui::Window) -> bool {
+    titlebar_toggle_maximize_available(
+        window.is_fullscreen(),
+        window.is_resizable(),
+        window.window_controls().maximize,
+    )
+}
+
+fn titlebar_toggle_maximize_available(
+    fullscreen: bool,
+    resizable: bool,
+    can_maximize: bool,
+) -> bool {
+    fullscreen || (resizable && can_maximize)
+}
+
+#[derive(Default)]
+struct WindowDragGesture {
+    armed: AtomicBool,
+}
+
+impl WindowDragGesture {
+    fn arm(&self) {
+        self.armed.store(true, Ordering::Relaxed);
+    }
+
+    fn cancel(&self) {
+        self.armed.store(false, Ordering::Relaxed);
+    }
+
+    fn take_for_move(&self, pressed_button: Option<gpui::MouseButton>) -> bool {
+        if pressed_button != Some(gpui::MouseButton::Left) {
+            self.cancel();
+            return false;
+        }
+        self.armed.swap(false, Ordering::Relaxed)
+    }
+}
+
+fn is_window_drag_region(element: &crate::retained_tree::RetainedElement) -> bool {
+    element.element_type == "div"
+        && element
+            .custom_props
+            .get("windowDragRegion")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        && element
+            .custom_props
+            .get("windowResizeEdge")
+            .and_then(|value| value.as_str())
+            .and_then(parse_window_resize_edge)
+            .is_none()
+}
+
+fn parse_window_resize_edge(value: &str) -> Option<gpui::ResizeEdge> {
+    match value {
+        "top" => Some(gpui::ResizeEdge::Top),
+        "topRight" => Some(gpui::ResizeEdge::TopRight),
+        "right" => Some(gpui::ResizeEdge::Right),
+        "bottomRight" => Some(gpui::ResizeEdge::BottomRight),
+        "bottom" => Some(gpui::ResizeEdge::Bottom),
+        "bottomLeft" => Some(gpui::ResizeEdge::BottomLeft),
+        "left" => Some(gpui::ResizeEdge::Left),
+        "topLeft" => Some(gpui::ResizeEdge::TopLeft),
+        _ => None,
+    }
+}
+
+fn parse_window_decorations(value: Option<&str>) -> Option<gpui::WindowDecorations> {
+    match value {
+        Some("client") => Some(gpui::WindowDecorations::Client),
+        Some("server") => Some(gpui::WindowDecorations::Server),
+        Some("auto") | None => None,
+        Some(_) => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
 pub struct WindowInsets {
@@ -5675,12 +5947,17 @@ pub struct WindowOptions {
     /// `title`. It does NOT set the title of the application menu itself: macOS
     /// takes that from the executable, and only a `.app` bundle changes it.
     pub app_name: Option<String>,
+    /// Desktop application identifier used for Linux dock/taskbar grouping.
+    pub app_id: Option<String>,
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub min_width: Option<f64>,
     pub min_height: Option<f64>,
     pub resizable: Option<bool>,
     pub fullscreen: Option<bool>,
+    /// `"client"` | `"server"` | `"auto"`. `auto` requests server decorations
+    /// and uses the compositor's effective fallback on Linux.
+    pub window_decorations: Option<String>,
     /// Plain alpha transparency. Prefer `window_background` when you need blur.
     pub transparent: Option<bool>,
     /// Hide the native titlebar so the app can draw chrome under the traffic lights.
@@ -5708,12 +5985,14 @@ impl Default for WindowOptions {
         Self {
             title: Some("GPUIX".to_string()),
             app_name: None,
+            app_id: None,
             width: Some(800.0),
             height: Some(600.0),
             min_width: None,
             min_height: None,
             resizable: Some(true),
             fullscreen: Some(false),
+            window_decorations: None,
             transparent: Some(false),
             titlebar_transparent: Some(false),
             window_background: None,
@@ -5763,6 +6042,8 @@ fn to_gpui_window_options(
             traffic_light_position,
         }),
         is_resizable: options.resizable.unwrap_or(true),
+        app_id: options.app_id.clone(),
+        window_decorations: parse_window_decorations(options.window_decorations.as_deref()),
         window_background,
         window_min_size,
         focus: options.focus.unwrap_or(true),
@@ -6159,11 +6440,81 @@ mod window_options_tests {
     }
 
     #[test]
-    fn key_handler_owns_only_keyboard_click_activation() {
-        assert!(!should_forward_primary_click(true, true));
-        assert!(should_forward_primary_click(true, false));
-        assert!(should_forward_primary_click(false, true));
-        assert!(should_forward_primary_click(false, false));
+    fn maps_linux_identity_and_decoration_requests() {
+        let client = mapped(WindowOptions {
+            app_id: Some("io.github.monotykamary.heddlework".to_string()),
+            window_decorations: Some("client".to_string()),
+            ..WindowOptions::default()
+        });
+        assert_eq!(
+            client.app_id.as_deref(),
+            Some("io.github.monotykamary.heddlework")
+        );
+        assert_eq!(
+            client.window_decorations,
+            Some(gpui::WindowDecorations::Client)
+        );
+
+        let server = mapped(WindowOptions {
+            window_decorations: Some("server".to_string()),
+            ..WindowOptions::default()
+        });
+        assert_eq!(
+            server.window_decorations,
+            Some(gpui::WindowDecorations::Server)
+        );
+
+        let automatic = mapped(WindowOptions {
+            window_decorations: Some("auto".to_string()),
+            ..WindowOptions::default()
+        });
+        assert_eq!(automatic.window_decorations, None);
+    }
+
+    #[test]
+    fn titlebar_double_click_honors_capabilities_but_can_restore_fullscreen() {
+        assert!(titlebar_toggle_maximize_available(false, true, true));
+        assert!(!titlebar_toggle_maximize_available(false, false, true));
+        assert!(!titlebar_toggle_maximize_available(false, true, false));
+        assert!(titlebar_toggle_maximize_available(true, false, false));
+    }
+
+    #[test]
+    fn window_drag_gesture_survives_rebuild_and_rejects_stale_moves() {
+        let mut gestures = HashMap::<u64, Arc<WindowDragGesture>>::new();
+        let first_frame = gestures.entry(7).or_default().clone();
+        first_frame.arm();
+
+        let next_frame = gestures.entry(7).or_default().clone();
+        assert!(Arc::ptr_eq(&first_frame, &next_frame));
+        assert!(next_frame.take_for_move(Some(gpui::MouseButton::Left)));
+        assert!(!next_frame.take_for_move(Some(gpui::MouseButton::Left)));
+
+        next_frame.arm();
+        assert!(!next_frame.take_for_move(None));
+        assert!(!next_frame.take_for_move(Some(gpui::MouseButton::Left)));
+
+        next_frame.arm();
+        assert!(!next_frame.take_for_move(Some(gpui::MouseButton::Right)));
+        assert!(!next_frame.take_for_move(Some(gpui::MouseButton::Left)));
+    }
+
+    #[test]
+    fn maps_every_window_resize_edge() {
+        let cases = [
+            ("top", gpui::ResizeEdge::Top),
+            ("topRight", gpui::ResizeEdge::TopRight),
+            ("right", gpui::ResizeEdge::Right),
+            ("bottomRight", gpui::ResizeEdge::BottomRight),
+            ("bottom", gpui::ResizeEdge::Bottom),
+            ("bottomLeft", gpui::ResizeEdge::BottomLeft),
+            ("left", gpui::ResizeEdge::Left),
+            ("topLeft", gpui::ResizeEdge::TopLeft),
+        ];
+        for (token, edge) in cases {
+            assert_eq!(parse_window_resize_edge(token), Some(edge));
+        }
+        assert_eq!(parse_window_resize_edge("center"), None);
     }
 
     #[test]

@@ -492,12 +492,8 @@ impl CustomElement for TextEditorElement {
                 });
             });
         }
-        editor = crate::accessibility::apply_a11y_click(
-            editor,
-            ctx.events,
-            ctx.id,
-            ctx.event_callback,
-        );
+        editor =
+            crate::accessibility::apply_a11y_click(editor, ctx.events, ctx.id, ctx.event_callback);
         editor.into_any_element()
     }
 

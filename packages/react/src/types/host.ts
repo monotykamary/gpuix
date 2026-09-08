@@ -1,6 +1,16 @@
-import type { EventPayload } from "@gpuix/native"
+import type { EventPayload, WindowState } from "@gpuix/native"
 
 export type DimensionValue = number | string
+
+export type WindowResizeEdge =
+  | "top"
+  | "topRight"
+  | "right"
+  | "bottomRight"
+  | "bottom"
+  | "bottomLeft"
+  | "left"
+  | "topLeft"
 
 export interface MotionStyle {
   width?: number
@@ -464,6 +474,12 @@ export interface Props {
   "aria-level"?: number
   /** Stable locator id for automation. */
   testId?: string
+  /** Use this div as native client-decoration titlebar chrome. A primary press
+   *  arms an OS move; pointer motion starts it. Double-click toggles maximize. */
+  windowDragRegion?: boolean
+  /** Start the OS client-decoration resize operation from this div. Takes
+   *  precedence over windowDragRegion and uses the current pointer-press serial. */
+  windowResizeEdge?: WindowResizeEdge
   /** Internal native animation description used by motion components. */
   motion?: MotionProps
 }
@@ -707,6 +723,13 @@ export interface NativeRenderer {
 
   // ── Window API ─────────────────────────────────────────────────
   getWindowSize?(): { width: number; height: number }
+  /** Effective native decoration mode, window state, and compositor controls. */
+  getWindowState?(): WindowState
+  minimizeWindow?(): void
+  /** Exit fullscreen first; otherwise toggle native maximize/restore. */
+  toggleMaximizeWindow?(): void
+  /** Request native window close. Last-window termination still uses onTerminated. */
+  closeWindow?(): void
   /** Destroy native child surfaces before the host process exits. */
   shutdown?(): void
   /** Whether this renderer includes the single-surface native terminal painter. */

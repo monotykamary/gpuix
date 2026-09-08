@@ -99,6 +99,7 @@ export type {
   TerminalProps,
   WindowKeyEventHandler,
   WindowKeyEventHandlers,
+  WindowResizeEdge,
 } from "./types/host.js"
 export { handleGpuixEvent } from "./reconciler/event-registry.js"
 export {
@@ -111,6 +112,7 @@ export type {
   EventPayload,
   EventModifiers,
   WindowOptions,
+  WindowState,
   WindowSize as NativeWindowSize,
 } from "@gpuix/native"
 

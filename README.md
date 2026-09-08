@@ -415,6 +415,8 @@ terminal.
 | `trafficLightX` / `trafficLightY` | pixels | Traffic-light origin. The chat example uses `(16, 17)` |
 | `transparent` | boolean | Same as `windowBackground: "transparent"` when that option is unset |
 | `appName` | string | Name inside the macOS `Hide X` and `Quit X` items. Defaults to `title` |
+| `appId` | string | Desktop application identity; used for Linux dock/taskbar grouping |
+| `windowDecorations` | `"auto"` (default), `"client"`, `"server"` | Requested Linux decoration mode; `auto` accepts compositor fallback |
 | `focus` | boolean, default `true` | `false` opens the window behind the active app, like `open -g` |
 | `show` | boolean, default `true` | `false` opens the window hidden. Call `activateWindow()` to reveal it |
 | `browserRootCachePath` | absolute path | Allowed parent for persistent Chromium profiles; set before the first `<browser>` mounts |
@@ -461,6 +463,67 @@ closing. Without it, `render()` performs the default `resetRender()` and exit.
 id, and one event map, so `createRoot()` throws if that renderer already has a
 mounted root. Call `unmount()` on the first root before you create another;
 `render()` already does that for you.
+
+### Native window controls and Linux client decorations
+
+Use `appId` for the desktop application identity and `windowDecorations` to
+choose Linux window chrome:
+
+```tsx
+render(<App />, {
+  appId: 'io.github.example.notes',
+  windowDecorations: 'auto',
+})
+```
+
+`"auto"` asks for server decorations and accepts the compositor's effective
+fallback. On Wayland compositors without `xdg-decoration` server-side support,
+including the common GNOME configuration, `getWindowState().decorations` is
+`"client"`. Always use that effective state to decide whether to paint custom
+chrome; do not infer it from the requested option.
+
+```ts
+type WindowState = {
+  decorations: 'client' | 'server'
+  maximized: boolean
+  fullscreen: boolean
+  resizable: boolean
+  canMinimize: boolean
+  canMaximize: boolean
+}
+
+const state = renderer.getWindowState()
+renderer.minimizeWindow()
+renderer.toggleMaximizeWindow()
+renderer.closeWindow()
+```
+
+The capability fields come from GPUI's platform window. On Wayland they track
+the compositor's `xdg_toplevel.wm_capabilities`; GPUIX does not invent a JS
+fallback. Poll `getWindowState()` after resize/state transitions when chrome
+must stay synchronized. `toggleMaximizeWindow()` exits fullscreen first;
+otherwise it invokes native maximize/restore. `closeWindow()` follows the same
+last-window lifecycle as native close, so `render({ onTerminated })` remains the
+place to flush application services.
+
+Client decorations must give the compositor real move and resize gestures:
+
+```tsx
+<div windowDragRegion style={{ height: 36 }}>
+  <div onClick={() => renderer.minimizeWindow()}>Minimize</div>
+  <div onClick={() => renderer.toggleMaximizeWindow()}>Maximize</div>
+  <div onClick={() => renderer.closeWindow()}>Close</div>
+</div>
+<div windowResizeEdge="bottomRight" style={{ position: 'absolute', right: 0, bottom: 0 }} />
+```
+
+A primary press on `windowDragRegion` arms the drag; the first pointer motion
+starts the OS move using the current Wayland pointer serial. Double-click invokes
+maximize/restore when the window is resizable and the compositor allows it;
+while fullscreen it remains available to restore the window. A
+`windowResizeEdge` press starts the native resize and takes precedence over
+`windowDragRegion`. Edges are `top`, `topRight`, `right`, `bottomRight`,
+`bottom`, `bottomLeft`, `left`, and `topLeft`.
 
 ### Background launch
 

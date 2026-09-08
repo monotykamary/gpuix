@@ -66,6 +66,11 @@ export declare class GpuixRenderer {
    * with `show: false` or `focus: false` is revealed later.
    */
   activateWindow(): void
+  getWindowState(): WindowState
+  minimizeWindow(): void
+  /** Restore fullscreen first; otherwise toggle the native maximized state. */
+  toggleMaximizeWindow(): void
+  closeWindow(): void
   setWindowTitle(title: string): void
   focusElement(elementId: number): void
   /** Move focus to the next GPUI tab stop. */
@@ -526,12 +531,19 @@ export interface WindowOptions {
    * takes that from the executable, and only a `.app` bundle changes it.
    */
   appName?: string
+  /** Desktop application identifier used for Linux dock/taskbar grouping. */
+  appId?: string
   width?: number
   height?: number
   minWidth?: number
   minHeight?: number
   resizable?: boolean
   fullscreen?: boolean
+  /**
+   * `"client"` | `"server"` | `"auto"`. `auto` requests server decorations
+   * and uses the compositor's effective fallback on Linux.
+   */
+  windowDecorations?: string
   /** Plain alpha transparency. Prefer `window_background` when you need blur. */
   transparent?: boolean
   /** Hide the native titlebar so the app can draw chrome under the traffic lights. */
@@ -565,4 +577,13 @@ export interface WindowOptions {
 export interface WindowSize {
   width: number
   height: number
+}
+
+export interface WindowState {
+  decorations: string
+  maximized: boolean
+  fullscreen: boolean
+  resizable: boolean
+  canMinimize: boolean
+  canMaximize: boolean
 }
