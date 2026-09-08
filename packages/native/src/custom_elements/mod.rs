@@ -55,6 +55,8 @@ pub struct CustomRenderContext<'a> {
     /// it. `ctx.text` matches the exact string it is about to paint instead,
     /// which makes drift between the search pass and the paint pass impossible.
     pub highlight_set: Option<std::sync::Arc<crate::text::HighlightContext>>,
+    /// Retained custom props, including `role` and `aria-*`.
+    pub props: &'a HashMap<String, serde_json::Value>,
 }
 
 impl CustomRenderContext<'_> {
@@ -127,6 +129,7 @@ pub(crate) fn custom_surface(
         el = el.relative();
     }
     el = el.child(crate::automation::bounds_tracker(ctx.id, None));
+    el = crate::accessibility::apply_accessibility(el, ctx.props, None);
     wire_standard_events(el, ctx)
 }
 
@@ -147,20 +150,17 @@ pub(crate) fn wire_standard_events<E: gpui::StatefulInteractiveElement>(
         let callback = ctx.event_callback.clone();
         match event.as_str() {
             "click" => {
-                let handles_key_down = ctx.events.contains("keyDown");
-                el = el.on_click(move |click, _window, _cx| {
-                    if handles_key_down && matches!(click, gpui::ClickEvent::Keyboard(_)) {
-                        return;
-                    }
+                // Match retained hosts: GPUI's semantic click is unreliable under
+                // embedded AppKit pumping, so primary mouse-up is the click boundary.
+                el = el.on_mouse_up(gpui::MouseButton::Left, move |mouse_event, _window, _cx| {
                     crate::renderer::emit_event_full(&callback, id, "click", |p| {
-                        let (x, y) = crate::renderer::point_to_xy(click.position());
+                        let (x, y) = crate::renderer::point_to_xy(mouse_event.position);
                         p.x = Some(x);
                         p.y = Some(y);
-                        p.click_count = Some(click.click_count() as u32);
-                        p.modifiers = Some(click.modifiers().into());
-                        if let gpui::ClickEvent::Mouse(mouse) = click {
-                            p.button = Some(crate::renderer::mouse_button_to_u32(mouse.up.button));
-                        }
+                        p.button = Some(0);
+                        p.click_count = Some(mouse_event.click_count as u32);
+                        p.modifiers = Some(mouse_event.modifiers.into());
+                        p.is_right_click = Some(false);
                     });
                 });
             }
@@ -183,7 +183,7 @@ pub(crate) fn wire_standard_events<E: gpui::StatefulInteractiveElement>(
             _ => {}
         }
     }
-    el
+    crate::accessibility::apply_a11y_click(el, ctx.events, ctx.id, ctx.event_callback)
 }
 
 // ── Traits ───────────────────────────────────────────────────────────

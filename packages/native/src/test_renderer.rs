@@ -138,6 +138,35 @@ fn u32_to_mouse_button(button: u32) -> gpui::MouseButton {
     }
 }
 
+/// Same SVG the JS img tests write to disk. VisualTestAppContext starts with
+/// a 404 FakeHttpClient, and a real ReqwestClient would leave the GPUI
+/// test dispatcher parked while Tokio fetches. This answers every request
+/// immediately so `<img src="https://…">` exercises GPUI's URI loader.
+const TEST_IMAGE_SVG: &str = concat!(
+    r##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="140" viewBox="0 0 240 140">"##,
+    r##"<rect x="0" y="0" width="240" height="140" fill="#1e2d59"/>"##,
+    r##"<rect x="16" y="16" width="208" height="108" rx="14" fill="#5ca9ff"/>"##,
+    r##"<circle cx="68" cy="70" r="24" fill="#ffd166"/>"##,
+    r##"<rect x="112" y="50" width="88" height="14" rx="7" fill="#20304f"/>"##,
+    r##"<rect x="112" y="74" width="70" height="12" rx="6" fill="#2a3c61"/>"##,
+    "</svg>",
+);
+
+fn install_test_image_http_client(cx: &mut gpui::App) {
+    let body = TEST_IMAGE_SVG.as_bytes().to_vec();
+    let client = gpui::http_client::FakeHttpClient::create(move |_req| {
+        let body = body.clone();
+        async move {
+            Ok(gpui::http_client::Response::builder()
+                .status(200)
+                .header("content-type", "image/svg+xml")
+                .body(body.into())
+                .unwrap())
+        }
+    });
+    cx.set_http_client(client);
+}
+
 // ── TestGpuixRenderer ────────────────────────────────────────────────
 
 /// GPU-backed GPUI test renderer. Uses VisualTestAppContext with the native
@@ -186,6 +215,7 @@ impl TestGpuixRenderer {
         let mut cx = gpui::VisualTestAppContext::new(platform);
         cx.update(|cx| {
             crate::custom_elements::input::init(cx);
+            install_test_image_http_client(cx);
         });
 
         // Open an offscreen window at (-10000, -10000) with the same GpuixView
@@ -210,6 +240,15 @@ impl TestGpuixRenderer {
 
         // Convert typed WindowHandle<GpuixView> to AnyWindowHandle for simulation methods.
         let window: gpui::AnyWindowHandle = window_handle.into();
+
+        // Visual tests have no VoiceOver / UIA client, so AccessKit never
+        // activates. Pretend one is connected so every flush builds a tree
+        // that get_a11y_tree can dump.
+        cx.update_window(window, |_, window, _| {
+            window.set_a11y_active_for_tests(true);
+        })
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        cx.run_until_parked();
 
         // Store !Send types on the JS main thread.
         TEST_STATE.with(|cell| {
@@ -854,6 +893,21 @@ impl TestGpuixRenderer {
         let json = tree.to_json(&std::collections::HashMap::new());
         serde_json::to_string_pretty(&json)
             .map_err(|e| Error::from_reason(format!("JSON serialization failed: {}", e)))
+    }
+
+    /// GPUI accessibility dump from the last painted frame.
+    /// Empty until a11y is active; the test renderer turns that on at construct.
+    #[napi(js_name = "getA11yTree")]
+    pub fn get_a11y_tree(&self) -> Result<String> {
+        self.flush()?;
+        with_test_state(|cx, window, _view| {
+            cx.update_window(window, |_, window, _| {
+                window
+                    .debug_a11y_tree_json()
+                    .unwrap_or_else(|| "{}".to_string())
+            })
+            .map_err(|e| Error::from_reason(e.to_string()))
+        })
     }
 
     /// Tree JSON with last-paint bounds. Used by the automation locators.

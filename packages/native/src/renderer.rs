@@ -34,6 +34,7 @@ use std::time::Duration;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::JsCast as _;
 
+use crate::accessibility::{apply_a11y_click, apply_accessibility};
 use crate::custom_elements::{CustomElementRegistry, CustomRenderContext};
 use crate::element_tree::EventPayload;
 use crate::retained_tree::{RetainedTree, StyleTable};
@@ -286,7 +287,7 @@ fn update_window<R>(
 }
 
 #[cfg(target_os = "macos")]
-// Keyboard handlers can update GpuixView, so dispatch without leasing the root view.
+// Input handlers can update GpuixView, so dispatch without leasing the root view.
 fn update_window_without_view<R>(
     update: impl FnOnce(&mut gpui::Window, &mut gpui::App) -> R,
 ) -> Result<R> {
@@ -639,58 +640,67 @@ async fn run_ui_commands(
                 })
             }
             UiCommand::DispatchMouse { input, response } => {
-                let result = window.update(cx, move |_view, window, cx| match input {
-                    MouseInput::Click {
-                        x,
-                        y,
-                        button,
-                        modifiers,
-                    } => {
-                        crate::automation::dispatch_click(window, cx, x, y, button, modifiers);
-                    }
-                    MouseInput::Down {
-                        x,
-                        y,
-                        button,
-                        modifiers,
-                    } => {
-                        crate::automation::dispatch_mouse_down(window, cx, x, y, button, modifiers);
-                    }
-                    MouseInput::Up {
-                        x,
-                        y,
-                        button,
-                        modifiers,
-                    } => {
-                        crate::automation::dispatch_mouse_up(window, cx, x, y, button, modifiers);
-                    }
-                    MouseInput::Move {
-                        x,
-                        y,
-                        pressed_button,
-                        modifiers,
-                    } => {
-                        crate::automation::dispatch_mouse_move(
-                            window,
-                            cx,
-                            x,
-                            y,
-                            pressed_button,
-                            modifiers,
-                        );
-                    }
-                    MouseInput::Wheel {
-                        x,
-                        y,
-                        delta_x,
-                        delta_y,
-                        modifiers,
-                    } => {
-                        crate::automation::dispatch_scroll_wheel(
-                            window, cx, x, y, delta_x, delta_y, modifiers,
-                        );
-                    }
-                });
+                let result =
+                    gpui::AnyWindowHandle::from(window).update(cx, move |_view, window, cx| {
+                        match input {
+                            MouseInput::Click {
+                                x,
+                                y,
+                                button,
+                                modifiers,
+                            } => {
+                                crate::automation::dispatch_click(
+                                    window, cx, x, y, button, modifiers,
+                                );
+                            }
+                            MouseInput::Down {
+                                x,
+                                y,
+                                button,
+                                modifiers,
+                            } => {
+                                crate::automation::dispatch_mouse_down(
+                                    window, cx, x, y, button, modifiers,
+                                );
+                            }
+                            MouseInput::Up {
+                                x,
+                                y,
+                                button,
+                                modifiers,
+                            } => {
+                                crate::automation::dispatch_mouse_up(
+                                    window, cx, x, y, button, modifiers,
+                                );
+                            }
+                            MouseInput::Move {
+                                x,
+                                y,
+                                pressed_button,
+                                modifiers,
+                            } => {
+                                crate::automation::dispatch_mouse_move(
+                                    window,
+                                    cx,
+                                    x,
+                                    y,
+                                    pressed_button,
+                                    modifiers,
+                                );
+                            }
+                            MouseInput::Wheel {
+                                x,
+                                y,
+                                delta_x,
+                                delta_y,
+                                modifiers,
+                            } => {
+                                crate::automation::dispatch_scroll_wheel(
+                                    window, cx, x, y, delta_x, delta_y, modifiers,
+                                );
+                            }
+                        }
+                    });
                 response
                     .send(
                         result
@@ -978,6 +988,7 @@ impl GpuixRenderer {
             .with_quit_mode(gpui::QuitMode::LastWindowClosed);
         let app_handle = app.run_embedded(move |cx: &mut gpui::App| {
             crate::custom_elements::input::init(cx);
+            crate::custom_elements::img::init(cx);
             // After the other bindings: `set_menus` reads key equivalents out of
             // the keymap, so every binding must exist before it runs.
             crate::app_menu::init(&app_name, cx);
@@ -1128,6 +1139,7 @@ impl GpuixRenderer {
                         .with_quit_mode(gpui::QuitMode::LastWindowClosed)
                         .run(move |cx| {
                             crate::custom_elements::input::init(cx);
+                            crate::custom_elements::img::init(cx);
                             let bounds = gpui::Bounds::centered(
                                 None,
                                 gpui::size(gpui::px(width as f32), gpui::px(height as f32)),
@@ -2005,7 +2017,7 @@ impl GpuixRenderer {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
 
         #[cfg(target_os = "macos")]
-        return update_window(move |_view, window, cx| {
+        return update_window_without_view(move |window, cx| {
             crate::automation::dispatch_click(window, cx, x, y, button, modifiers);
         });
 
@@ -2043,7 +2055,7 @@ impl GpuixRenderer {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
 
         #[cfg(target_os = "macos")]
-        return update_window(move |_view, window, cx| {
+        return update_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_down(window, cx, x, y, button, modifiers);
         });
 
@@ -2081,7 +2093,7 @@ impl GpuixRenderer {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
 
         #[cfg(target_os = "macos")]
-        return update_window(move |_view, window, cx| {
+        return update_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_up(window, cx, x, y, button, modifiers);
         });
 
@@ -2118,7 +2130,7 @@ impl GpuixRenderer {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
 
         #[cfg(target_os = "macos")]
-        return update_window(move |_view, window, cx| {
+        return update_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_move(window, cx, x, y, pressed_button, modifiers);
         });
 
@@ -2159,7 +2171,7 @@ impl GpuixRenderer {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
 
         #[cfg(target_os = "macos")]
-        return update_window(move |_view, window, cx| {
+        return update_window_without_view(move |window, cx| {
             crate::automation::dispatch_scroll_wheel(window, cx, x, y, delta_x, delta_y, modifiers);
         });
 
@@ -2399,6 +2411,28 @@ fn update_web_window<R>(
                 })?;
                 window
                     .update(cx, update)
+                    .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
+            })
+        })
+    })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn update_web_window_without_view<R>(
+    update: impl FnOnce(&mut gpui::Window, &mut gpui::App) -> R,
+) -> Result<R, wasm_bindgen::JsValue> {
+    WEB_APP.with(|app| {
+        let app = app.borrow();
+        let app = app
+            .as_ref()
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("GPUIX web is not initialized"))?;
+        app.update(|cx| {
+            WEB_WINDOW.with(|window| {
+                let window = (*window.borrow()).ok_or_else(|| {
+                    wasm_bindgen::JsValue::from_str("GPUIX web window is not ready")
+                })?;
+                gpui::AnyWindowHandle::from(window)
+                    .update(cx, move |_view, window, cx| update(window, cx))
                     .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
             })
         })
@@ -2772,9 +2806,8 @@ impl WebGpuixRenderer {
         modifiers: Option<String>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
-        update_web_window(move |_view, window, cx| {
+        update_web_window_without_view(move |window, cx| {
             crate::automation::dispatch_click(window, cx, x, y, button.unwrap_or(0), modifiers);
-            cx.notify();
         })
     }
 
@@ -2787,7 +2820,7 @@ impl WebGpuixRenderer {
         modifiers: Option<String>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
-        update_web_window(move |_view, window, cx| {
+        update_web_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_down(
                 window,
                 cx,
@@ -2796,7 +2829,6 @@ impl WebGpuixRenderer {
                 button.unwrap_or(0),
                 modifiers,
             );
-            cx.notify();
         })
     }
 
@@ -2809,9 +2841,8 @@ impl WebGpuixRenderer {
         modifiers: Option<String>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
-        update_web_window(move |_view, window, cx| {
+        update_web_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_up(window, cx, x, y, button.unwrap_or(0), modifiers);
-            cx.notify();
         })
     }
 
@@ -2824,9 +2855,8 @@ impl WebGpuixRenderer {
         modifiers: Option<String>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
-        update_web_window(move |_view, window, cx| {
+        update_web_window_without_view(move |window, cx| {
             crate::automation::dispatch_mouse_move(window, cx, x, y, pressed_button, modifiers);
-            cx.notify();
         })
     }
 
@@ -2840,9 +2870,8 @@ impl WebGpuixRenderer {
         modifiers: Option<String>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
-        update_web_window(move |_view, window, cx| {
+        update_web_window_without_view(move |window, cx| {
             crate::automation::dispatch_scroll_wheel(window, cx, x, y, delta_x, delta_y, modifiers);
-            cx.notify();
         })
     }
 
@@ -4176,6 +4205,7 @@ pub(crate) fn build_element(
                 selectable: inherited.selectable,
                 selection_wash: inherited.selection_wash,
                 highlight_set: inherited.highlight.clone(),
+                props: &element.custom_props,
             };
             ctx.custom_registry
                 .render(custom_type, &element.custom_props, render_ctx, window, cx)
@@ -4318,12 +4348,16 @@ fn build_virtual_list(
         };
         view.build_virtual_child(list_id, index, child_id, inherited.clone(), window, cx)
     });
-    let mut list =
-        gpui::list(list_state, render_item).with_sizing_behavior(gpui::ListSizingBehavior::Auto);
+    let mut list = gpui::list(list_state, render_item)
+        .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+        .id(gpui::ElementId::Name(gpui::SharedString::from(format!(
+            "__gpuix_virtual_list_{}",
+            element.id
+        ))));
     if let Some(style) = element.style.as_deref() {
         list = apply_styles(list, style);
     }
-    list.into_any_element()
+    apply_accessibility(list, &element.custom_props, None).into_any_element()
 }
 
 fn unmounted_virtual_row(height: f32) -> gpui::AnyElement {
@@ -4340,6 +4374,28 @@ fn virtual_row_ancestor(tree: &RetainedTree, list_id: u64, element_id: u64) -> O
         }
         current = parent;
     }
+}
+
+fn joined_text_content(
+    tree: &RetainedTree,
+    element: &crate::retained_tree::RetainedElement,
+) -> Option<String> {
+    if let Some(content) = element.content.as_deref().filter(|value| !value.is_empty()) {
+        return Some(content.to_string());
+    }
+    let mut parts = Vec::new();
+    for child_id in &element.children {
+        let Some(child) = tree.elements.get(child_id) else {
+            continue;
+        };
+        if child.element_type == "text" {
+            if let Some(content) = child.content.as_deref() {
+                parts.push(content);
+            }
+        }
+    }
+    let joined = parts.concat();
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// The one builder for `<div>` and `<text>`.
@@ -4463,40 +4519,47 @@ pub(crate) fn build_host_container(
         el = el.tab_index(tab_index).tab_stop(tab_index >= 0);
     }
 
+    // React text instances (`createTextInstance`) are also type `text` and
+    // hold `content`. Only the host `<text>` (no content of its own) gets
+    // Label. The inner nodes stay out of the AX tree so VoiceOver does not
+    // hear the same string twice.
+    let is_text_host = element.element_type == "text" && element.content.is_none();
+    let default_role = is_text_host.then_some(gpui::Role::Label);
+    el = apply_accessibility(el, &element.custom_props, default_role);
+    if is_text_host && element.custom_props.get("aria-valuetext").is_none() {
+        if let Some(content) = joined_text_content(ctx.tree, element) {
+            el = el.aria_value(content);
+        }
+    }
+
     // Wire up events.
-    // Some events (on_hover, on_click) require a stateful element (.id()),
+    // Some events (on_hover, on_aux_click) require a stateful element (.id()),
     // which we already set above. Others (on_mouse_down, on_key_down) work
     // on any InteractiveElement.
+    if element.events.contains("click") {
+        let id = element.id;
+        let callback = ctx.event_callback.clone();
+        // GPUI's higher-level on_click gesture is not finalized by the
+        // embedded macOS pump. Bubble listeners run in reverse registration
+        // order, so attach click first to keep onMouseUp ahead of onClick.
+        el = el.on_mouse_up(gpui::MouseButton::Left, move |mouse_event, _window, _cx| {
+            emit_event_full(&callback, id, "click", |p| {
+                let (x, y) = point_to_xy(mouse_event.position);
+                p.x = Some(x);
+                p.y = Some(y);
+                p.button = Some(0);
+                p.modifiers = Some(mouse_event.modifiers.into());
+                p.click_count = Some(mouse_event.click_count as u32);
+                p.is_right_click = Some(false);
+            });
+        });
+        el = apply_a11y_click(el, &element.events, id, ctx.event_callback);
+    }
+
     for event_type in &element.events {
         let id = element.id;
         let callback = ctx.event_callback.clone();
         match event_type.as_str() {
-            // ── Click ────────────────────────────────────────────
-            // Primary button only, like the DOM. Right and middle clicks go to
-            // `onAuxClick`, and `onMouseDown` sees every button.
-            "click" => {
-                let handles_key_down = element.events.contains("keyDown");
-                el = el.on_click(move |click_event, _window, _cx| {
-                    if !should_forward_primary_click(
-                        matches!(click_event, gpui::ClickEvent::Keyboard(_)),
-                        handles_key_down,
-                    ) {
-                        return;
-                    }
-                    emit_event_full(&callback, id, "click", |p| {
-                        let (x, y) = point_to_xy(click_event.position());
-                        p.x = Some(x);
-                        p.y = Some(y);
-                        p.modifiers = Some(click_event.modifiers().into());
-                        p.click_count = Some(click_event.click_count() as u32);
-                        p.is_right_click = Some(click_event.is_right_click());
-                        if let gpui::ClickEvent::Mouse(mouse) = click_event {
-                            p.button = Some(mouse_button_to_u32(mouse.up.button));
-                        }
-                    });
-                });
-            }
-
             // ── Aux click (non-primary), like the DOM `auxclick` ──
             "auxClick" => {
                 el = el.on_aux_click(move |click_event, _window, _cx| {
@@ -5007,6 +5070,12 @@ pub(crate) fn apply_styles<E: gpui::Styled>(mut el: E, style: &StyleDesc) -> E {
         if clamp >= 1.0 {
             el = el.line_clamp(clamp as usize);
         }
+    }
+    match style.text_decoration.as_deref() {
+        Some("underline") => el = el.underline(),
+        Some("line-through") => el = el.line_through(),
+        Some("none") => el = el.text_decoration_none(),
+        _ => {}
     }
     // `line_height` was accepted by the style type but never applied, so
     // multi-line text always used gpui's default leading.

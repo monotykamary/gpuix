@@ -1,7 +1,7 @@
 /// Persist-and-remount tests for render(). bun --hot re-evaluates the entry
 /// and calls render() again; the native host must stay the same instance.
 
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { unlinkSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { join } from "node:path"
@@ -30,8 +30,24 @@ if (!slot.__hotRenderer) {
   slot.__hotRenderer = new TestRenderer()
 }
 const renderer = slot.__hotRenderer
-render(React.createElement("text", null, ${JSON.stringify(label)}), { renderer })
+render(
+  React.createElement(
+    "div",
+    {
+      onClick: () => console.log("HOT_CLICK", ${JSON.stringify(label)}),
+      style: { width: 100, height: 100 },
+    },
+    ${JSON.stringify(label)}
+  ),
+  { renderer }
+)
 renderer.flush()
+renderer.nativeSimulateClick(10, 10)
+const rootId = renderer.getRoot()?.id
+if (slot.__hotRootId !== undefined) {
+  console.log("HOT_NEW_ROOT_ID", rootId !== slot.__hotRootId)
+}
+slot.__hotRootId = rootId
 console.log("HOT_EVAL", slot.__hotEvals)
 console.log("HOT_LABEL", ${JSON.stringify(label)})
 console.log("HOT_TEXT", JSON.stringify(renderer.getAllText()))
@@ -156,25 +172,110 @@ describeNative("render()", () => {
     expect(ignored.getAllText()).toEqual([])
   })
 
-  it("replaces painted text when the entry is evaluated again", () => {
-    render(<text>hello</text>, { renderer })
-    renderer.flush()
-    expect(renderer.getAllText()).toEqual(["hello"])
+    it("replaces painted text when the entry is evaluated again", () => {
+      render(<text>hello</text>, { renderer })
+      renderer.flush()
+      expect(renderer.getAllText()).toEqual(["hello"])
 
-    render(<text>world</text>, { renderer })
-    renderer.flush()
-    expect(renderer.getAllText()).toEqual(["world"])
-  })
+      render(<text>world</text>, { renderer })
+      renderer.flush()
+      expect(renderer.getAllText()).toEqual(["world"])
+    })
+
+    it("shows an overlay when a click-triggered render throws, then reloads", async () => {
+      function Boom() {
+        const [boom, setBoom] = useState(false)
+        if (boom) throw new Error("kaboom")
+        return (
+          <div
+            testId="go"
+            style={{ width: 100, height: 100 }}
+            onClick={() => setBoom(true)}
+          >
+            <text>ok</text>
+          </div>
+        )
+      }
+
+      render(<Boom />, { renderer })
+      renderer.flush()
+      expect(renderer.getAllText()).toEqual(["ok"])
+
+      renderer.nativeSimulateClick(10, 10)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      renderer.flush()
+
+      const text = renderer.getAllText().join("\n")
+      expect(text).toContain("Runtime error")
+      expect(text).toContain("kaboom")
+      expect(renderer.getPaintedText().join("\n")).toContain("kaboom")
+      const reload = renderer.findByTestId("runtime-error-reload")
+      expect(reload).toBeDefined()
+      const bounds = renderer.getElementBounds(reload!.id)
+      expect(bounds).not.toBeNull()
+      renderer.nativeSimulateClick(bounds![0] + 8, bounds![1] + 8)
+      expect(renderer.getAllText()).toEqual(["ok"])
+    })
+
+    it("does not paint a stale overlay over a later remount", async () => {
+      function Boom() {
+        throw new Error("stale boom")
+      }
+
+      render(<Boom />, { renderer })
+      render(<text>fresh</text>, { renderer })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      renderer.flush()
+      expect(renderer.getAllText()).toEqual(["fresh"])
+    })
+
+    it("removes process error handlers on resetRender", () => {
+      const before = process.listenerCount("unhandledRejection")
+      render(<text>ok</text>, { renderer })
+      expect(process.listenerCount("unhandledRejection")).toBeGreaterThan(before)
+      resetRender()
+      expect(process.listenerCount("unhandledRejection")).toBe(before)
+    })
+
+    it("shows a process-level unhandled rejection on the overlay", () => {
+      const testingPath = new URL("../testing.ts", import.meta.url).pathname
+      const rendererPath = new URL("../reconciler/renderer.ts", import.meta.url)
+        .pathname
+      const script = [
+        'import React from "react"',
+        `import { TestRenderer } from ${JSON.stringify(testingPath)}`,
+        `import { render } from ${JSON.stringify(rendererPath)}`,
+        "const renderer = new TestRenderer()",
+        'render(React.createElement("text", null, "ok"), { renderer })',
+        "renderer.flush()",
+        'void Promise.reject(new Error("promise boom"))',
+        "setTimeout(() => {",
+        "  renderer.flush()",
+        '  console.log("TEXT", JSON.stringify(renderer.getAllText()))',
+        "  process.exit(0)",
+        "}, 40)",
+      ].join("\n")
+      const result = spawnSync("bun", ["-e", script], {
+        encoding: "utf8",
+        timeout: 5_000,
+      })
+      expect(result.status, result.stderr || result.error?.message).toBe(0)
+      expect(result.stdout).toMatch(/promise boom/)
+      expect(result.stdout).toMatch(/Reload/)
+    })
 
   it("does not deliver a queued window event to a remounted root", () => {
     const received: string[] = []
+    const observed: string[] = []
     render(<text>first</text>, {
       renderer,
       onKeyDown: () => received.push("first"),
+      onEvent: () => observed.push("first"),
     })
     render(<text>second</text>, {
       renderer,
       onKeyDown: () => received.push("second"),
+      onEvent: () => observed.push("second"),
     })
 
     handleGpuixEvent(
@@ -187,6 +288,7 @@ describeNative("render()", () => {
     )
 
     expect(received).toEqual(["second"])
+    expect(observed).toEqual(["second"])
   })
 
   it("delivers Tab to elements and the renderer without moving focus", () => {
@@ -333,6 +435,7 @@ describeNative("render()", () => {
     try {
       await output.wait("HOT_LABEL hello", 15_000)
       await output.wait('HOT_TEXT ["hello"]', 1000)
+      await output.wait("HOT_CLICK hello", 1000)
       await output.wait("HOT_SAME_RENDERER true", 1000)
       await new Promise((resolve) => setTimeout(resolve, 300))
 
@@ -340,6 +443,8 @@ describeNative("render()", () => {
 
       await output.wait("HOT_LABEL world", 15_000)
       await output.wait('HOT_TEXT ["world"]', 1000)
+      await output.wait("HOT_CLICK world", 1000)
+      await output.wait("HOT_NEW_ROOT_ID true", 1000)
       await output.wait("HOT_SAME_RENDERER true", 1000)
     } finally {
       child.kill("SIGTERM")

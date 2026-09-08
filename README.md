@@ -4,14 +4,14 @@ React bindings for [GPUI](https://github.com/zed-industries/zed/tree/main/crates
 
 Build native GPU-accelerated desktop apps with React and TypeScript. Your components render directly to the GPU via Metal, DirectX, or Vulkan. No Electron, no web views.
 
-![The GPUIX chat example running natively](./docs/images/chat-app.png)
+![mail.tax example](./docs/images/mail-app.jpg)
 
-Everything above is GPUIX: the sidebar, the scrolling list, the composer,
+Everything above is GPUIX: the sidebar, the thread list, the reading pane,
 and native `<markdown>`. Start it with **`bun --hot`** so a save remounts React
 on the same window:
 
 ```bash
-cd examples && bun --hot chat.tsx
+cd examples && bun --hot mail.tsx
 ```
 
 ## Quickstart
@@ -27,7 +27,8 @@ bun run dev
 ```
 
 `@gpuix/react` pulls the native renderer for your platform. Edit `app.tsx` and
-the running window remounts on save.
+the running window remounts on save. Click and keyboard handlers switch to the
+new tree without recreating the window.
 
 ### Build from scratch
 
@@ -114,6 +115,10 @@ bun build --compile app.tsx --outfile dist/app
 
 The binary carries the renderer, so it runs with no Bun and no Node install.
 
+For a smaller ship set, run the same React app on
+[hermes-node](./website/src/guides/hermes.mdx) instead of Bun. That path is
+**12 MB** plus a **22 MB** native sidecar. The steps are in that guide.
+
 ### Start from the example app
 
 [`example-app/`](https://github.com/remorses/gpuix/tree/main/example-app) is a complete todo app in one file, with `dev`,
@@ -139,13 +144,14 @@ gpuix completions install
 | **blurred window** | `bun run blurred-window` | A macOS frosted-glass surface using GPUI's native vibrancy backdrop and transparent titlebar |
 | **chat** | `bun --hot chat.tsx` | A GPUIX app: transparent titlebar, animated sidebar, message list, composer, `<markdown>` |
 | **timeline** | `bun --hot timeline.tsx` | A video-editor timeline: clip dragging, edge trimming with snapping, playhead scrubbing, marquee selection, zoom under the pointer, and a two-axis pan with a frozen ruler and track column |
+| **mail** | `bun --hot mail.tsx` | A Superhuman-style mail client: three panes, thread list, and a Framer newsletter |
 | **native-text** | `bun --hot native-text.tsx` | The three native text components with a tab switcher |
 | **counter** | `bun --hot counter.tsx` | The smallest possible app: state, events, hover |
 | **diff** | `bun --hot diff.tsx` | A diff viewer composed from `<div>` and `<text>` in JS, for comparison |
 | **web** | `bun run web` from the repository root | The ChatGPT example rendered in a browser canvas with WebGPU |
 
 The todo app lives in [`example-app/`](https://github.com/remorses/gpuix/tree/main/example-app) and is meant to be copied.
-The rest live in [`examples/`](https://github.com/remorses/gpuix/tree/main/examples). All of them use hardcoded data.
+The rest live in [`examples/`](https://github.com/remorses/gpuix/tree/main/examples). Those use hardcoded data.
 
 Or download a standalone **chat** build from the [GitHub release](https://github.com/remorses/gpuix/releases). No Bun or Rust install is required.
 
@@ -685,13 +691,21 @@ promises, and sockets between polls. Pass `{ frameMs }` to change the rate, and 
 `.stop()` on the returned handle to end it. Even an unexpectedly long tick yields at
 least 4ms before the next poll.
 
+A **runtime throw does not freeze the window.** The frame loop catches errors from
+`tick()`, native event callbacks catch throws from React handlers, and `render()`
+installs `uncaughtException` / `unhandledRejection` listeners so bun stays alive.
+The window shows the stack and a **Reload** button that remounts the last
+`render()` tree. Save under `bun --hot` also remounts. The process does not
+exit.
+
 On **Windows and Linux**, GPUI runs its normal blocking native event loop on one
-dedicated Rust UI thread. Node sends in-process commands to that thread, so
-`startFrameLoop` returns a no-op handle and does not create a JavaScript timer.
-All platforms use GPUI's native platform, window, renderer, input, scroll,
-clipboard, keyboard, and IME implementations. The embedded macOS run-loop
-extension comes from the pinned GPUIX fork. CI runs the full React and example
-test suites through DirectX on Windows.
+dedicated Rust UI thread. `tick()` does not pump that loop. It only reports
+whether the UI thread is still inside `Platform::run`. `startFrameLoop` still
+creates a JavaScript timer so last-window-close can return false and `render()`
+can `process.exit`, matching macOS. All platforms use GPUI's native platform,
+window, renderer, input, scroll, clipboard, keyboard, and IME implementations.
+The embedded macOS run-loop extension comes from the pinned GPUIX fork. CI runs
+the full React and example test suites through DirectX on Windows.
 
 > [!IMPORTANT]
 > On macOS, never drive `tick()` from a `setImmediate` loop. That spins at tens of thousands of
@@ -1276,12 +1290,19 @@ grapheme-safe deletion and mouse positioning.
   minRows={1}
   maxRows={8}
   onChange={(event) => setDraft(event.value ?? '')}
+/>
+
+<textarea
+  value={draft}
+  onChange={(event) => setDraft(event.value ?? '')}
   onSubmit={send}
 />
 ```
 
-`Enter` emits `onSubmit`. In a `<textarea>`, `Shift+Enter` inserts a newline.
-The editor updates natively first, then reports the complete value to React.
+`Enter` inserts a newline in a `<textarea>`. Pass **`onSubmit`** to emit that
+event on Enter instead; `Shift+Enter` still inserts a newline. An `<input>`
+always emits `onSubmit` on Enter. The editor updates natively first, then
+reports the complete value to React.
 `value` changes can replace the native content, but keeping the same prop value
 does not reject an edit like a browser-controlled input.
 
@@ -1292,6 +1313,82 @@ inactive. Override its colour through the shared native theme:
 ```tsx
 <input theme={{ caret: '#22c55e' }} />
 ```
+
+### Input in a search pill
+
+`<input>` has **no default inner padding** and paints text at the top of its
+box. A single-line input vertically centers its text when given extra height.
+Set `padding` on the input style or on a parent wrapper. When the input has
+`borderRadius`, text clips to the rounded shape automatically.
+
+```tsx
+<div style={{
+  display: 'flex',
+  flexDirection: 'row',
+  alignItems: 'center',
+  height: 32,
+  paddingLeft: 10,
+  paddingRight: 4,
+  borderRadius: 16,
+  backgroundColor: '#1a1a22',
+  borderWidth: 1,
+  borderColor: '#ffffff14',
+}}>
+  <input
+    value={query}
+    onChange={(e) => setQuery(e.value ?? '')}
+    style={{ flexGrow: 1, minWidth: 0, fontSize: 13, color: '#e8e8ed' }}
+  />
+</div>
+```
+
+## Accessibility
+
+GPUI talks to the **macOS AX tree**, Windows UIA, and Linux AT-SPI through
+AccessKit. GPUIX maps React props onto that API. A node is in the tree only
+when it has **both** a GPUI id (always set) and a **role**.
+
+Prop names match React DOM. Role **values** are ARIA tokens, not AccessKit
+PascalCase. `"none"` and `"presentation"` produce no node.
+
+```tsx
+<div
+  role="button"
+  aria-label="Delete note"
+  aria-description="Removes this note"
+  aria-id="notes.delete"
+  onClick={remove}
+>
+  Delete
+</div>
+```
+
+| Prop               | GPUI / AccessKit                          |
+| ------------------ | ----------------------------------------- |
+| `role`             | `.role(Role::…)`                          |
+| `aria-label`       | accessible name                           |
+| `aria-description` | extra description after name, role, value |
+| `aria-id`          | `AXIdentifier` / UIA AutomationId         |
+| `aria-expanded`    | expanded state                            |
+| `aria-selected`    | selected state                            |
+| `aria-valuetext`   | string value                              |
+| `aria-level`       | heading level                             |
+
+Native defaults, so common elements are not silent:
+
+| Element       | Default role            | Name / value                         |
+| ------------- | ----------------------- | ------------------------------------ |
+| `<text>`      | `Label`                 | content as `aria-valuetext`          |
+| `<input>`     | `TextInput`             | `value` and `placeholder`            |
+| `<textarea>`  | `MultilineTextInput`    | `value` and `placeholder`            |
+| `<img>`       | `Image`                 | `alt` as `aria-label`                |
+
+An explicit `role` wins over those defaults. A clickable `div` is **not** a
+button until you set `role="button"`. `onClick` registers AccessKit `Click`,
+so VoiceOver Press fires the same JS `click` handler.
+
+The browser / wasm renderer has no AccessKit adapter. These props are
+no-ops there.
 
 ## Focus and keyboard navigation
 
@@ -2117,20 +2214,21 @@ Bash, TOML, YAML, Markdown, HTML, CSS, C.
 | `input`         | Native single-line text editor                   |
 | `textarea`      | Native multiline, auto-growing text editor       |
 | `virtual-list`  | Long collections; only visible rows are built    |
-| `img`           | Local/data URL raster or SVG images               |
+| `img`           | Local, data URL, or http(s) raster or SVG images  |
 | `svg`           | Tintable monochrome SVG icons from source or disk |
 | `anchored`      | Positioned overlay                               |
 | `canvas`        | Custom drawing (planned)                         |
 
 ## Images and icons
 
-`<img>` takes a **filesystem path or data URL**. Resolve local files with
-`fileURLToPath` or `path.join`, or encode in-memory bytes as base64.
+`<img>` takes a **filesystem path, data URL, or http(s) URL**. Resolve local
+files with `fileURLToPath` or `path.join`, encode in-memory bytes as base64, or
+pass a remote URL and let GPUI fetch it.
 
 ### `<img>`
 
 `<img>` paints through GPUI's image element. It loads **PNG, JPEG, WebP, GIF,
-SVG, BMP, TIFF, ICO, and Netpbm** from disk or data URLs. SVG here is a
+SVG, BMP, TIFF, ICO, and Netpbm** from disk, data URLs, or http(s). SVG here is a
 full-colour image, not a tintable icon.
 
 ```tsx
@@ -2147,12 +2245,38 @@ const src = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
 <img src={src} style={{ width: 240, height: 140 }} />
 ```
 
+```tsx
+<img
+  src="https://example.com/avatar.png"
+  objectFit="cover"
+  style={{ width: 48, height: 48, borderRadius: 24 }}
+/>
+```
+
+Set **both** `width` and `height`. GPUI fetches and decodes on a background
+task. The tree does not wait. Without a definite size the box is empty until
+decode, then jumps to the bitmap size.
+
 Data URLs support every image format listed above. Base64 and percent-encoded
-payloads are accepted.
+payloads are accepted. Remote URLs use the same GPUI image cache as disk files.
+They are not written to a temp file.
 
 `objectFit` matches CSS: `"contain"` (default), `"cover"`, `"fill"`,
 `"scaleDown"`, or `"none"`. An empty `src` or a failed load shows a fallback
-placeholder instead of crashing.
+placeholder instead of crashing. A URL that is still loading paints an empty
+box of the declared size. There is no spinner.
+
+`borderRadius` clips the bitmap. GPUI paints the image with those corner
+radii. A parent `overflow: "hidden"` wrapper does **not** clip an `<img>`
+child. Put the radius on the image.
+
+```tsx
+<img
+  src={avatarUrl}
+  objectFit="cover"
+  style={{ width: 32, height: 32, borderRadius: 16 }}
+/>
+```
 
 ### `<svg>`
 
@@ -2219,8 +2343,8 @@ text imports no longer need a runtime flag.
 
 | Event | Props | Payload fields |
 |-------|-------|----------------|
-| Click | `onClick` | `x`, `y`, `button` (mouse), `clickCount`, `isRightClick`, `modifiers` — primary activation only |
-| Aux click | `onAuxClick` | Same fields, for non-primary mouse buttons |
+| Click | `onClick` | `x`, `y`, `button`, `clickCount`, `isRightClick`, `modifiers` — primary button only |
+| Aux click | `onAuxClick` | `x`, `y`, `clickCount`, `isRightClick`, `modifiers` — non-primary buttons |
 | Mouse down | `onMouseDown` | `x`, `y`, `button`, `clickCount`, `modifiers` |
 | Mouse up | `onMouseUp` | `x`, `y`, `button`, `clickCount`, `modifiers` |
 | Mouse enter | `onMouseEnter` | `hovered` |
@@ -2233,7 +2357,7 @@ text imports no longer need a runtime flag.
 | Blur | `onBlur` | — |
 | Scroll | `onScroll` | `deltaX`, `deltaY`, `precise`, `touchPhase`, `modifiers` |
 | Change | `onChange` | `value` — `<input>` and `<textarea>` only |
-| Submit | `onSubmit` | `value` — `<input>` and `<textarea>` only |
+| Submit | `onSubmit` | `value` — `<input>` always, `<textarea>` when `onSubmit` is set |
 | Toggle file | `onToggleFile` | `value` (file path) — `<diff>` only |
 | Show more | `onShowMore` | `value` (hidden line count) — `<diff>` only |
 | Line click | `onLineClick` | `value`, `oldLine`, `newLine` — `<diff>` only |
@@ -2270,12 +2394,9 @@ is one event per pointer move.
 Capture arms on the **left** button only. A right-button drag is not captured,
 so it ends when the pointer leaves the element.
 
-`onClick` is the primary activation, like the DOM. Mouse clicks report
-`event.button === 0`; use **`onAuxClick`** for other buttons. `onMouseDown` and
-`onMouseUp` see every button (`0` left, `1` middle, `2` right). GPUI also emits
-a clean Enter/Space activation for a focused click listener. If that element
-registers `onKeyDown`, GPUix leaves keyboard activation to that handler so one
-keypress cannot dispatch the action twice.
+`onClick` fires on primary-button mouse-up. Use **`onAuxClick`** for the others,
+and read `event.isRightClick`. `onMouseDown` and `onMouseUp` see every
+button through `event.button` (`0` left, `1` middle, `2` right).
 
 ## Supported Styles
 
@@ -2295,6 +2416,25 @@ CSS-like styling via the `style` prop:
   </div>
 </div>
 ```
+
+> [!IMPORTANT]
+> **GPUIX styles look like CSS but are not CSS.** A few differences trip
+> everyone up on the first project:
+>
+> - **`div` is block, not flex.** Set `display: "flex"` before using
+>   `flexDirection`, `gap`, `alignItems`, or `alignSelf`. Without it those
+>   props are silently ignored.
+> - **A flex child that must shrink needs `minWidth: 0`.** Same rule as CSS,
+>   but easier to miss because there is no browser DevTools to inspect.
+> - **No shorthand values.** `padding`, `margin`, and `border` take numbers.
+>   CSS strings like `"0 16px"`, `"1px solid #fff"`, or `calc()` are ignored.
+> - **`boxShadow` is a structured object**, not a CSS string. See below.
+> - **No `<button>`.** Use `<div onClick>` with `cursor: "pointer"`.
+> - **Do not nest `<text>` in `<text>`.** Adjacent `<text>` siblings merge
+>   into one line. A `<text>` child of another `<text>` is a nested div.
+> - **`<input>` has no default inner padding.** Set `padding` on the input
+>   style, or pad the parent wrapper. The input clips to its own
+>   `borderRadius` automatically.
 
 **Layout:** `display` (`"flex"` | `"grid"`), `flexDirection`, `flexWrap`, `flexGrow`, `flexShrink`, `flexBasis`, `alignItems`, `alignSelf`, `alignContent`, `justifyContent`, `gap`, `rowGap`, `columnGap`, `gridTemplateColumns`, `gridTemplateRows`, `gridColumnMin`, `gridRowMin`
 
@@ -2414,7 +2554,7 @@ Limited relative-color forms can derive a new color from a base value:
 
 **Overflow:** `overflow`, `overflowX`, `overflowY` — `"hidden"` clips content, `"scroll"` creates a native scrollable container with persistent scroll state
 
-**Text:** `fontSize`, `fontFamily`, `fontWeight`, `textAlign`, `lineHeight`, `whiteSpace`, `textOverflow`, `lineClamp`
+**Text:** `fontSize`, `fontFamily`, `fontWeight`, `textAlign`, `lineHeight`, `whiteSpace`, `textOverflow`, `lineClamp`, `textDecoration` (`"underline"` | `"line-through"` | `"none"`)
 
 **Selection:** `userSelect` (`"text"` | `"none"`), `selectionColor` — both inherit down the tree
 
@@ -2463,6 +2603,7 @@ wrapping `<div>`.
 
 Mark elements with **`testId`**, then drive them like Playwright. The same
 client works in vitest, inside browser pages, and against a child process.
+Mouse actions use the normal GPUI input path in all three hosts.
 
 ```tsx
 <div testId="sidebar-collapse" onClick={onCollapse}>‹</div>
@@ -2830,6 +2971,7 @@ The test renderer uses `VisualTestAppContext` with a `TestDispatcher` for determ
 - [ ] App-declared menus and menu callbacks
 - [x] Background launch (`focus`, `show`, `activateWindow`)
 - [x] Last window close quits the process
+- [x] Runtime errors keep the macOS window alive and show a stack overlay
 - [x] Debug frame overlay (`debugFrameOverlay` / `setDebugFrameOverlay`)
 - [ ] Canvas element
 - [ ] Multiple windows

@@ -2,7 +2,7 @@
 
 **Read [README.md](./README.md) first** to understand what GPUIX is, the architecture, mutation API, event flow, supported elements/events/styles, and the test renderer.
 
-Not **remorses**? Do not open a pull request. Open an issue. See [External contributors](#external-contributors).
+Unless you are **remorses** or **monotykamary**, do not open a pull request. Open an issue. See [External contributors](#external-contributors).
 
 ## README is the public API contract
 
@@ -1169,7 +1169,7 @@ belong in README. This list is only the remaining engineering work.
 - [x] Atomic `applyBatch()` mutation transport
 - [x] GPU-backed test renderer
 - [x] Native `<input>` and `<textarea>`
-- [x] `<img>` (local raster/SVG) and `<svg>` (tintable monochrome icons)
+- [x] `<img>` (local, data URL, or http(s) raster/SVG) and `<svg>` (tintable monochrome icons)
 - [x] `<virtual-list>`
 - [x] `<code>`, `<diff>`, `<markdown>` with Syntect
 - [x] Cross-element text selection
@@ -1180,6 +1180,7 @@ belong in README. This list is only the remaining engineering work.
 - [x] macOS menu bar (`crate::app_menu`, `appName`)
 - [x] Background launch (`focus`, `show`, `activateWindow`)
 - [x] Last window close quits the process
+- [x] Runtime errors keep the macOS window alive and show a stack overlay
 - [x] Debug frame overlay (`setDebugFrameOverlay`)
 
 ### TODO
@@ -1274,6 +1275,12 @@ work. Linux currently ignores `focus`.
 
 ### Drive the live window
 
+When the user asks to **open an example so they can look**, start
+`bun --hot <file>.tsx` and **leave that session running**. A save remounts
+React on the same window. Do not relaunch without `--hot`. Do not kill the
+session after a screenshot. `bun --hot` still drops `useState` on save; that
+is the desktop remount path, not Fast Refresh.
+
 **Do not use `usecomputer`, `screencapture`, or desktop clicks.** GPUIX has a
 Playwright-like automation API. Full docs are in the README **Automation**
 section.
@@ -1330,7 +1337,7 @@ you record a sidebar open/close, not a screen recorder.
 
 ## External contributors
 
-This section is for anyone who is not [remorses](https://github.com/remorses) (Tommy).
+This section is for anyone other than [remorses](https://github.com/remorses) (Tommy) or **monotykamary**.
 
 **Do not open a pull request.** Open a GitHub issue. Describe the bug or the idea. Wait.
 

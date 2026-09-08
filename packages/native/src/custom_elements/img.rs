@@ -2,6 +2,10 @@
 ///
 /// This provides a native `<img>` for GPUIX React apps while keeping the same
 /// custom-element prop pipeline (`setCustomProp`/`custom_props`).
+///
+/// HTTP(S) `src` is a GPUI URI resource. GPUI fetches it through the app
+/// `HttpClient` on a background task and paints once decode finishes. A
+/// definite `width` and `height` keep the layout box stable during that load.
 use super::{CustomElement, CustomElementFactory, CustomRenderContext};
 use base64::Engine as _;
 
@@ -71,6 +75,7 @@ enum ImgSource {
     #[default]
     Empty,
     Path(std::path::PathBuf),
+    Uri(gpui::SharedUri),
     Data(std::sync::Arc<gpui::Image>),
     Invalid,
 }
@@ -79,11 +84,13 @@ enum ImgSource {
 pub struct ImgElement {
     source: ImgSource,
     object_fit: ImgObjectFit,
+    alt: String,
 }
 
 impl ImgElement {
     fn load_src(&mut self, src: &str) {
-        self.source = if src.trim().is_empty() {
+        let src = src.trim();
+        self.source = if src.is_empty() {
             ImgSource::Empty
         } else if src.starts_with("data:") {
             // TODO: Replace JSON data URLs with binary mutations to keep base64 decoding off paint.
@@ -92,16 +99,60 @@ impl ImgElement {
                     ImgSource::Data(std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)))
                 })
                 .unwrap_or(ImgSource::Invalid)
+        } else if let Some(uri) = http_image_uri(src) {
+            ImgSource::Uri(uri)
         } else {
             ImgSource::Path(src.into())
         };
     }
 }
 
-fn img_fallback(ctx: &CustomRenderContext, message: &str) -> gpui::AnyElement {
+fn http_image_uri(src: &str) -> Option<gpui::SharedUri> {
+    let scheme_end = src.find("://")?;
+    let scheme = &src[..scheme_end];
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    (src.len() > scheme_end + 3).then(|| gpui::SharedUri::from(src.to_string()))
+}
+
+/// Install the GPUI HTTP client so `<img src="https://…">` can fetch.
+///
+/// Web already gets `fetch` from `gpui_platform::single_threaded_web`. Desktop
+/// Application defaults to `NullHttpClient`, which fails every URI load.
+pub fn init(cx: &mut gpui::App) {
+    #[cfg(not(target_family = "wasm"))]
+    match reqwest_client::ReqwestClient::user_agent("gpuix") {
+        Ok(client) => cx.set_http_client(std::sync::Arc::new(client)),
+        Err(error) => log::error!(
+            "GPUIX HTTP client failed to start; <img src=\"http…\"> will not load: {error:#}"
+        ),
+    }
+    #[cfg(target_family = "wasm")]
+    let _ = cx;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_image_uri;
+
+    #[test]
+    fn only_http_urls_become_uri_sources() {
+        assert!(http_image_uri("https://example.test/a.png").is_some());
+        assert!(http_image_uri("HTTP://localhost:9/a.png").is_some());
+        assert!(http_image_uri("HTTPS://example.test/a.png").is_some());
+        assert!(http_image_uri("/tmp/a.png").is_none());
+        assert!(http_image_uri("data:image/png;base64,xx").is_none());
+        assert!(http_image_uri("file:///tmp/a.png").is_none());
+        assert!(http_image_uri("https://").is_none());
+        assert!(http_image_uri("http://").is_none());
+    }
+}
+
+fn img_fallback(ctx: &CustomRenderContext, alt: &str, message: &str) -> gpui::AnyElement {
     use gpui::prelude::*;
 
-    let fallback = super::custom_surface(
+    let mut fallback = super::custom_surface(
         gpui::div()
             .id(gpui::SharedString::from(format!("__gpuix_img_{}", ctx.id)))
             .flex()
@@ -113,6 +164,12 @@ fn img_fallback(ctx: &CustomRenderContext, message: &str) -> gpui::AnyElement {
             .text_color(gpui::rgba(0xa4accdff)),
         ctx,
     );
+    fallback = crate::accessibility::apply_accessibility(
+        fallback,
+        ctx.props,
+        Some(gpui::Role::Image),
+    );
+    fallback = crate::accessibility::apply_image_label(fallback, ctx.props, alt);
     fallback
         .child(ctx.chrome_text(message.to_string(), None))
         .into_any_element()
@@ -129,9 +186,10 @@ impl CustomElement for ImgElement {
 
         let el = match &self.source {
             ImgSource::Path(path) => gpui::img(path.clone()),
+            ImgSource::Uri(uri) => gpui::img(uri.clone()),
             ImgSource::Data(image) => gpui::img(image.clone()),
-            ImgSource::Empty => return img_fallback(&ctx, "img: no src"),
-            ImgSource::Invalid => return img_fallback(&ctx, "img: load failed"),
+            ImgSource::Empty => return img_fallback(&ctx, &self.alt, "img: no src"),
+            ImgSource::Invalid => return img_fallback(&ctx, &self.alt, "img: load failed"),
         };
         // The id is what makes gpui's `ImgState` persist. Without it `Img` has no
         // `GlobalElementId`, so the animated-GIF frame index and the delayed
@@ -155,8 +213,23 @@ impl CustomElement for ImgElement {
 
         if let Some(style) = ctx.style {
             el = crate::renderer::apply_interactive_styles(el, style);
+            // GPUI fills `aspect_ratio` from the bitmap once it loads. That
+            // overrides a definite height and jumps the box. A CSS `<img>` with
+            // both width and height keeps that box; `objectFit` paints inside it.
+            if let (
+                Some(crate::style::DimensionValue::Pixels(width)),
+                Some(crate::style::DimensionValue::Pixels(height)),
+            ) = (style.width.as_ref(), style.height.as_ref())
+            {
+                if *width > 0.0 && *height > 0.0 {
+                    el = el.aspect_ratio((*width as f32) / (*height as f32));
+                }
+            }
         }
 
+        let mut el =
+            crate::accessibility::apply_accessibility(el, ctx.props, Some(gpui::Role::Image));
+        el = crate::accessibility::apply_image_label(el, ctx.props, &self.alt);
         let el = super::wire_standard_events(el, &ctx);
         crate::automation::track_own_bounds(el, ctx.id).into_any_element()
     }
@@ -170,12 +243,13 @@ impl CustomElement for ImgElement {
                     .map(ImgObjectFit::from_str)
                     .unwrap_or_default()
             }
+            "alt" => self.alt = value.as_str().unwrap_or_default().to_string(),
             _ => {}
         }
     }
 
     fn supported_props(&self) -> &'static [&'static str] {
-        &["src", "objectFit"]
+        &["src", "objectFit", "alt"]
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
@@ -302,6 +376,7 @@ impl CustomElement for SvgElement {
         if let Some(style) = ctx.style {
             icon = crate::renderer::apply_interactive_styles(icon, style);
         }
+        icon = crate::accessibility::apply_accessibility(icon, ctx.props, None);
         let icon = super::wire_standard_events(icon, &ctx);
         crate::automation::track_own_bounds(icon, ctx.id).into_any_element()
     }
