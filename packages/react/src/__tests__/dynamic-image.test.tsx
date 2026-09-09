@@ -18,9 +18,21 @@ function shot(renderer: ReturnType<typeof createTestRoot>["renderer"], name: str
   const path = `${SHOTS_DIR}/dynamic-image-${name}.png`
   renderer.captureScreenshot(path)
   const image = PNG.sync.read(fs.readFileSync(path))
-  // Sample well inside each texel field, away from GPUI's linear atlas edges.
+  const target = renderer.findByTestId("image")!
+  const [left, top, width, height] = renderer.getElementBounds(target.id)!
+  const viewport = renderer.getWindowSize()
+  const scaleX = image.width / viewport.width
+  const scaleY = image.height / viewport.height
+  // Sample the element, not the window: platforms can clamp the requested window size.
+  // Stay inside each texel field, away from GPUI's linear atlas edges.
   return [0.375, 0.5, 0.625].flatMap(y => [0.375, 0.5, 0.625].map(x => {
-    const offset = (Math.floor(y * image.height) * image.width + Math.floor(x * image.width)) * 4
+    const pixelX = Math.floor((left! + x * width!) * scaleX)
+    const pixelY = Math.floor((top! + y * height!) * scaleY)
+    expect(pixelX).toBeGreaterThanOrEqual(0)
+    expect(pixelX).toBeLessThan(image.width)
+    expect(pixelY).toBeGreaterThanOrEqual(0)
+    expect(pixelY).toBeLessThan(image.height)
+    const offset = (pixelY * image.width + pixelX) * 4
     return Array.from(image.data.subarray(offset, offset + 4))
   }))
 }
@@ -32,10 +44,15 @@ function expectColor(samples: number[][], rgba: number[]) {
 }
 
 describeNative("dynamic image public path", () => {
-  it.each(["layout", "passive"] as const)("uploads from a %s effect after create/src commit", (timing) => {
+  it.each([
+    ["layout", 64, 0],
+    ["passive", 64, 0],
+    ["layout", 256, 24],
+    ["passive", 256, 24],
+  ] as const)("uploads from a %s effect in a %ipx window at offset %i", (timing, windowSize, offset) => {
     const red = () => new Uint8Array(Array.from({ length: 16 }, () => [0, 0, 255, 255]).flat())
     const blue = () => new Uint8Array(Array.from({ length: 16 }, () => [255, 0, 0, 255]).flat())
-    const root = createTestRoot({ width: 64, height: 64 })
+    const root = createTestRoot({ width: windowSize, height: windowSize })
     const commits = vi.spyOn(root.renderer, "applyBatch")
     let renderer!: NativeRenderer
     let id = -1
@@ -49,7 +66,7 @@ describeNative("dynamic image public path", () => {
         id = ref.current!.id
         if (upload) renderer.updateImage!(id, 4, 4, red())
       }, [source, upload])
-      return <img ref={ref} testId="image" src={source} style={{ width: 64, height: 64 }} />
+      return <img ref={ref} testId="image" src={source} style={{ position: "absolute", left: offset, top: offset, width: 64, height: 64 }} />
     }
     root.render(<App />)
     expect(id).toBeGreaterThanOrEqual(0)
