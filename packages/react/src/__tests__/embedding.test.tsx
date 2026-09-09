@@ -82,15 +82,18 @@ describeNative("native integration snapshots", () => {
 
   it("clips to the viewport by default and never reports negative clip dimensions", () => {
     const ref = createRef<PublicInstance>()
-    root.render(<div ref={ref} style={{ position: "absolute", left: 280, top: 180, width: 50, height: 40 }} />)
+    const { width, height } = root.renderer.getWindowSize()
+    const left = width - 20
+    const top = height - 20
+    root.render(<div ref={ref} style={{ position: "absolute", left, top, width: 50, height: 40 }} />)
     const visible = root.renderer.getElementPaintState(ref.current!.id)!
-    expect(visible.bounds).toEqual({ x: 280, y: 180, width: 50, height: 40 })
-    expect(visible.clipBounds).toEqual({ x: 280, y: 180, width: 20, height: 20 })
+    expect(visible.bounds).toEqual({ x: left, y: top, width: 50, height: 40 })
+    expect(visible.clipBounds).toEqual({ x: left, y: top, width: 20, height: 20 })
     root.render(<div ref={ref} style={{ position: "absolute", left: -20, top: -10, width: 50, height: 40 }} />)
     const negative = root.renderer.getElementPaintState(ref.current!.id)!
     expect(negative.bounds).toEqual({ x: -20, y: -10, width: 50, height: 40 })
     expect(negative.clipBounds).toEqual({ x: 0, y: 0, width: 30, height: 30 })
-    for (const position of [400, -100]) {
+    for (const position of [Math.max(width, height) + 100, -100]) {
       root.render(<div ref={ref} style={{ position: "absolute", left: position, top: position, width: 50, height: 40 }} />)
       const clipped = root.renderer.getElementPaintState(ref.current!.id)
       // GPUI may skip paint altogether; a record is not proof of visibility.
